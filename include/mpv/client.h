@@ -2026,6 +2026,94 @@ MPV_DEFINE_SYM_PTR(mpv_get_wakeup_pipe)
 
 #endif
 
+/**
+ * The sockpuppet-d3d11 render context: rendering into shared Direct3D 11
+ * textures for a host that embeds libmpv on Windows, with no window.
+ *
+ * The host calls mpv_sockpuppet_d3d11_set_host() before the VO is created
+ * (before mpv_initialize() is safe) and starts playback with
+ * --vo=gpu-next --gpu-context=sockpuppet-d3d11. mpv creates the device on
+ * the adapter named by adapter_luid, renders every frame as it would to a
+ * window, copies the finished frame on the GPU into one of ring_length shared
+ * textures, and calls present() with the slot. The host owns the NT handles
+ * ring_changed() names, closes them itself, and returns a slot with
+ * mpv_sockpuppet_d3d11_release() when it is done with the frame in it.
+ *
+ * The textures carry a keyed mutex; both sides acquire and release key 0.
+ *
+ * Only available on Windows builds with d3d11. Everywhere else the functions
+ * return MPV_ERROR_UNSUPPORTED.
+ */
+
+/** The most shared textures a host may ask for. */
+#define MPV_SOCKPUPPET_D3D11_MAX_RING 8
+
+/** How the pixels in a shared texture are encoded. */
+typedef enum mpv_sockpuppet_d3d11_color_space {
+    /** 8- or 10-bit, sRGB transfer, BT.709 primaries. */
+    MPV_SOCKPUPPET_D3D11_CSP_SRGB = 0,
+    /** 10-bit, PQ (SMPTE ST 2084), BT.2020 primaries. */
+    MPV_SOCKPUPPET_D3D11_CSP_PQ = 1,
+    /** 16-bit float, linear light, BT.709 primaries, 1.0 = SDR white (scRGB). */
+    MPV_SOCKPUPPET_D3D11_CSP_SCRGB_LINEAR = 2,
+    /** 10-bit, gamma 2.2, BT.2020 primaries. */
+    MPV_SOCKPUPPET_D3D11_CSP_BT2020_G22 = 3
+} mpv_sockpuppet_d3d11_color_space;
+
+typedef struct mpv_sockpuppet_d3d11_host {
+    /** Passed back to every callback. */
+    void *ctx;
+    /** The adapter to render on, as (HighPart << 32 | LowPart). 0 = default. */
+    uint64_t adapter_luid;
+    /**
+     * The HWND whose monitor decides the target colour space, colour depth
+     * and SDR white level, the way it does for a windowed mpv. May be NULL,
+     * in which case none of those are known.
+     */
+    void *window;
+    /**
+     * A DXGI_OUTPUT_DESC1 to use instead of the window's monitor, or NULL.
+     * A test hook: it lets an SDR machine exercise the HDR decisions.
+     */
+    const void *override_output_desc;
+    /** SDR white level in nits to use instead of the monitor's. 0 = read it. */
+    float override_sdr_white_level;
+    /** Number of shared textures, 2 to MPV_SOCKPUPPET_D3D11_MAX_RING. */
+    int ring_length;
+    /** The stage size in pixels. Polled by the VO thread. */
+    void (*get_size)(void *ctx, int *width, int *height);
+    /** The stage's DPI scale (1.0 = 96 dpi), for subtitle sizing. May be NULL. */
+    float (*get_dpi_scale)(void *ctx);
+    /**
+     * A new ring: count NT handles (HANDLE values) to shared textures of
+     * width x height in DXGI format dxgi_format. Called from the VO thread
+     * whenever the size or format changes. The host closes the handles.
+     */
+    void (*ring_changed)(void *ctx, int count, void *const *nt_handles,
+                         int width, int height, int dxgi_format);
+    /**
+     * A frame is in slot index, with mpv's presentation time pts_ns and the
+     * encoding color_space (an mpv_sockpuppet_d3d11_color_space). Called
+     * from the VO thread. The slot is the host's until released.
+     */
+    void (*present)(void *ctx, int index, int64_t pts_ns, int color_space);
+} mpv_sockpuppet_d3d11_host;
+
+/**
+ * Register the host. The table is copied. Call before the VO exists.
+ *
+ * @return error code
+ */
+MPV_EXPORT int mpv_sockpuppet_d3d11_set_host(mpv_handle *ctx,
+                                             const mpv_sockpuppet_d3d11_host *host);
+
+/**
+ * Give a ring slot back. Thread-safe.
+ *
+ * @return error code
+ */
+MPV_EXPORT int mpv_sockpuppet_d3d11_release(mpv_handle *ctx, int index);
+
 #ifdef __cplusplus
 }
 #endif

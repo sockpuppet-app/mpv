@@ -495,6 +495,41 @@ bool mp_dxgi_list_or_verify_adapters(struct mp_log *log,
 // Create a Direct3D 11 device for rendering and presentation. This is meant to
 // reduce boilerplate in backends that D3D11, while also making sure they share
 // the same device creation logic and log the same information.
+IDXGIAdapter1 *mp_get_dxgi_adapter_by_luid(struct mp_log *log, uint64_t luid)
+{
+    IDXGIFactory1 *factory = NULL;
+    IDXGIAdapter1 *adapter = NULL;
+
+    PFN_CREATE_DXGI_FACTORY pCreateDXGIFactory1 = get_CreateDXGIFactory1();
+    if (!pCreateDXGIFactory1) {
+        mp_err(log, "Failed to load CreateDXGIFactory1 function.\n");
+        return NULL;
+    }
+    HRESULT hr = pCreateDXGIFactory1(&IID_IDXGIFactory1, (void **)&factory);
+    if (FAILED(hr)) {
+        mp_err(log, "Failed to create a DXGI factory: %s\n", mp_HRESULT_to_str(hr));
+        return NULL;
+    }
+
+    for (unsigned i = 0; SUCCEEDED(IDXGIFactory1_EnumAdapters1(factory, i, &adapter)); i++) {
+        DXGI_ADAPTER_DESC1 desc;
+        if (SUCCEEDED(IDXGIAdapter1_GetDesc1(adapter, &desc))) {
+            uint64_t found = (uint64_t)(uint32_t)desc.AdapterLuid.HighPart << 32 |
+                             (uint32_t)desc.AdapterLuid.LowPart;
+            if (found == luid)
+                break;
+        }
+        SAFE_RELEASE(adapter);
+    }
+    SAFE_RELEASE(factory);
+
+    if (!adapter) {
+        mp_warn(log, "No adapter with LUID %016llx was found; using the "
+                     "default adapter.\n", (unsigned long long)luid);
+    }
+    return adapter;
+}
+
 bool mp_d3d11_create_present_device(struct mp_log *log,
                                     struct d3d11_device_opts *opts,
                                     ID3D11Device **dev_out)
@@ -512,7 +547,10 @@ bool mp_d3d11_create_present_device(struct mp_log *log,
     bool success = false;
     HRESULT hr;
 
-    adapter = mp_get_dxgi_adapter(log, bstr0(adapter_name), NULL);
+    if (opts->adapter_luid)
+        adapter = mp_get_dxgi_adapter_by_luid(log, opts->adapter_luid);
+    if (!adapter)
+        adapter = mp_get_dxgi_adapter(log, bstr0(adapter_name), NULL);
 
     if (adapter_name && !adapter) {
         mp_warn(log, "Adapter matching '%s' was not found in the system! "
@@ -825,9 +863,13 @@ static bool configure_created_swapchain(struct mp_log *log,
     struct pl_color_space pl_color_system = { 0 };
     bool mp_csp_mapped = false;
 
-    query_output_format_and_colorspace(log, swapchain,
-                                       &probed_format,
-                                       &probed_colorspace);
+    // A caller that has decided both has no use for the output, and a
+    // swapchain made for composition has none to query.
+    if (requested_format == DXGI_FORMAT_UNKNOWN || requested_csp == -1) {
+        query_output_format_and_colorspace(log, swapchain,
+                                           &probed_format,
+                                           &probed_colorspace);
+    }
 
 
     selected_format = requested_format != DXGI_FORMAT_UNKNOWN ?
