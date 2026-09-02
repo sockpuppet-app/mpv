@@ -22,6 +22,7 @@
 #include <dxgi1_6.h>
 
 #include "mpv/client.h"
+#include "osdep/threads.h"
 #include "video/out/gpu/context.h"
 
 // What mpv_sockpuppet_d3d11_set_host() registers on the mpv_global, and what
@@ -48,6 +49,24 @@ struct mp_sockpuppet_d3d11 {
     // across a VO that is destroyed and created again.
     _Atomic uint32_t slot_gen[MPV_SOCKPUPPET_D3D11_MAX_RING];
     _Atomic uint32_t generation;
+
+    // The VO this context is running on, or NULL when there is none.
+    //
+    // Published by sp_init() and retracted by sp_uninit(), both on the VO
+    // thread and both under vo_lock. mpv_sockpuppet_d3d11_wakeup() takes the
+    // same lock around vo_wakeup(), so a wakeup racing a teardown either gets
+    // there first, and holds the lock the retraction is waiting for, or
+    // arrives after it and finds NULL. It can never be handed a vo that is
+    // being freed. This is the whole lifetime guarantee: the pointer is only
+    // ever read under the lock, and it is never read anywhere else.
+    //
+    // vo_lock is a leaf. vo_wakeup() takes vo_internal.lock beneath it, and
+    // nothing that holds vo_internal.lock takes vo_lock: sp_init() and
+    // sp_uninit() run from the VO thread's preinit and uninit, both outside
+    // that lock. It is initialised by mp_clients_init() and destroyed by
+    // mp_clients_destroy(), so it outlives every VO.
+    mp_mutex vo_lock;
+    struct vo *vo;
 };
 
 extern const struct ra_ctx_fns ra_ctx_d3d11_sockpuppet;

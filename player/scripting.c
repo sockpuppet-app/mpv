@@ -366,6 +366,7 @@ static void init_sym_table(struct mp_script_args *args, void *lib) {
     INIT_SYM(mpv_get_wakeup_pipe);
     INIT_SYM(mpv_sockpuppet_d3d11_set_host);
     INIT_SYM(mpv_sockpuppet_d3d11_release);
+    INIT_SYM(mpv_sockpuppet_d3d11_wakeup);
 
     INIT_SYM(mpv_render_context_create);
     INIT_SYM(mpv_render_context_set_parameter);

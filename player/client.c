@@ -194,6 +194,7 @@ void mp_clients_init(struct MPContext *mpctx)
     // reads. It is a child of clients, so it goes in mp_clients_destroy().
     mpctx->global->sockpuppet_d3d11 =
         talloc_zero(mpctx->clients, struct mp_sockpuppet_d3d11);
+    mp_mutex_init(&mpctx->global->sockpuppet_d3d11->vo_lock);
 #endif
 }
 
@@ -211,6 +212,13 @@ void mp_clients_destroy(struct MPContext *mpctx)
     }
 
     mp_mutex_destroy(&mpctx->clients->lock);
+#if HAVE_D3D11
+    // The VO is long gone by here, so nothing holds this and nothing will
+    // take it again: every client handle is destroyed before this runs, and
+    // mpv_sockpuppet_d3d11_wakeup() needs one.
+    mp_mutex_destroy(&mpctx->global->sockpuppet_d3d11->vo_lock);
+    mpctx->global->sockpuppet_d3d11 = NULL;
+#endif
     talloc_free(mpctx->clients);
     mpctx->clients = NULL;
 }
@@ -2330,6 +2338,28 @@ int mpv_sockpuppet_d3d11_release(mpv_handle *ctx, uint32_t generation, int index
     // then copy the next frame into while the host is still reading it.
     uint32_t expected = generation;
     atomic_compare_exchange_strong(&state->slot_gen[index], &expected, 0);
+    return 0;
+#else
+    return MPV_ERROR_UNSUPPORTED;
+#endif
+}
+
+int mpv_sockpuppet_d3d11_wakeup(mpv_handle *ctx)
+{
+#if HAVE_D3D11
+    struct mp_sockpuppet_d3d11 *state = ctx->mpctx->global->sockpuppet_d3d11;
+    if (!state)
+        return MPV_ERROR_UNINITIALIZED;
+
+    // The VO pointer is only ever read here, under vo_lock, and the context
+    // publishes and retracts it under the same lock from the VO thread. So
+    // either the VO is alive for the whole of vo_wakeup(), because sp_uninit()
+    // is waiting on the lock this holds, or it is already gone and there is
+    // nothing to wake. Nothing between those two states is observable.
+    mp_mutex_lock(&state->vo_lock);
+    if (state->vo)
+        vo_wakeup(state->vo);
+    mp_mutex_unlock(&state->vo_lock);
     return 0;
 #else
     return MPV_ERROR_UNSUPPORTED;

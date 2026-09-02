@@ -32,6 +32,9 @@ API changes
 
 ::
 
+ 2.7    - add mpv_sockpuppet_d3d11_wakeup(), which wakes the VO thread so the
+          sockpuppet-d3d11 context re-reads the stage size and draws without
+          waiting for the next video frame (Windows only)
  2.6    - add mpv_sockpuppet_d3d11_set_host(), mpv_sockpuppet_d3d11_release(),
           mpv_sockpuppet_d3d11_host and mpv_sockpuppet_d3d11_color_space, for
           the sockpuppet-d3d11 gpu-context: Direct3D 11 rendering into shared

@@ -215,8 +215,14 @@ static int sp_control(struct ra_ctx *ctx, int *events, int request, void *arg)
 
     switch (request) {
     case VOCTRL_CHECK_EVENTS: {
-        // The host has no way to wake the VO thread, so the stage size is
-        // polled here, which the VO loop reaches often.
+        // The stage size is read here, at the top of every VO iteration.
+        // mpv_sockpuppet_d3d11_wakeup() is what makes that iteration happen
+        // now rather than at the next video frame, which on 24 fps content
+        // is up to 42 ms away. The poll stays: it costs one host callback per
+        // iteration, it is where the size has to be read either way, and it
+        // is what makes a host that forgets to call, or one built against a
+        // libmpv without the wakeup, converge anyway instead of freezing at
+        // the old size.
         int w, h;
         read_size(ctx, &w, &h);
         if (w != ctx->vo->dwidth || h != ctx->vo->dheight) {
@@ -699,6 +705,18 @@ static void sp_uninit(struct ra_ctx *ctx)
 {
     struct priv *p = ctx->priv;
 
+    // Retract the VO first, and under the lock, so that a wakeup already
+    // inside vo_wakeup() finishes before anything here runs and no wakeup
+    // that arrives afterwards finds a pointer at all. The comparison matters
+    // for the failure path: sp_init() calls this before it has published,
+    // and must not clear a VO it never set.
+    if (p->state) {
+        mp_mutex_lock(&p->state->vo_lock);
+        if (p->state->vo == ctx->vo)
+            p->state->vo = NULL;
+        mp_mutex_unlock(&p->state->vo_lock);
+    }
+
     // Tell the host before anything is torn down: it is holding NT handles to
     // a device that is about to be destroyed, and nothing else would ever
     // say so.
@@ -864,6 +882,14 @@ static bool sp_init(struct ra_ctx *ctx)
     };
     if (!mp_d3d11_create_swapchain(p->device, ctx->log, &scopts, &p->swapchain))
         goto error;
+
+    // Last, once nothing else can fail: from here the host may wake this VO
+    // through mpv_sockpuppet_d3d11_wakeup(). Published under the lock the
+    // wakeup takes, so it never sees a half-built context, and retracted the
+    // same way in sp_uninit().
+    mp_mutex_lock(&p->state->vo_lock);
+    p->state->vo = ctx->vo;
+    mp_mutex_unlock(&p->state->vo_lock);
 
     return true;
 
