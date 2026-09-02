@@ -25,6 +25,7 @@
 #include "video/out/gpu/spirv.h"
 #include "video/out/w32_common.h"
 #include "context.h"
+#include "context_sockpuppet.h"
 #include "ra_d3d11.h"
 
 #ifdef PL_HAVE_D3D11
@@ -588,6 +589,8 @@ static void d3d11_update_render_opts(struct ra_ctx *ctx)
 
 IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
 {
+    if (ra->fns == &ra_ctx_d3d11_sockpuppet)
+        return ra_d3d11_sockpuppet_get_swapchain(ra);
     if (ra->swapchain->fns != &d3d11_swapchain)
         return NULL;
 
@@ -602,6 +605,10 @@ IDXGISwapChain *ra_d3d11_ctx_get_swapchain(struct ra_ctx *ra)
 void ra_d3d11_ctx_set_swapchain_params(struct ra_ctx *ra,
                                        struct pl_d3d11_swapchain_params *params)
 {
+    if (ra->fns == &ra_ctx_d3d11_sockpuppet) {
+        ra_d3d11_sockpuppet_set_swapchain_params(ra, params);
+        return;
+    }
     mp_assert(ra->swapchain->fns == &d3d11_swapchain);
 
     struct priv *p = ra->priv;
