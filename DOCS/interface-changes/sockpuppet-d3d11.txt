@@ -1,0 +1,3 @@
+add `mpv_sockpuppet_d3d11_set_host()` and `mpv_sockpuppet_d3d11_release()`, and the
+`sockpuppet-d3d11` gpu-context: Direct3D 11 rendering into shared textures for
+an embedding host, with no window (Windows only)

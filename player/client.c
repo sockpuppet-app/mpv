@@ -24,6 +24,9 @@
 
 #include "common/common.h"
 #include "common/global.h"
+#if HAVE_D3D11
+#include "video/out/d3d11/context_sockpuppet.h"
+#endif
 #include "common/msg.h"
 #include "common/msg_control.h"
 #include "input/input.h"
@@ -2246,4 +2249,40 @@ bool mp_streamcb_lookup(struct mpv_global *g, const char *protocol,
     }
     mp_mutex_unlock(&clients->lock);
     return found;
+}
+
+int mpv_sockpuppet_d3d11_set_host(mpv_handle *ctx,
+                                  const mpv_sockpuppet_d3d11_host *host)
+{
+#if HAVE_D3D11
+    if (!host || !host->get_size || !host->ring_changed || !host->present ||
+        host->ring_length < 2 || host->ring_length > MPV_SOCKPUPPET_D3D11_MAX_RING)
+        return MPV_ERROR_INVALID_PARAMETER;
+
+    struct mpv_global *global = ctx->mpctx->global;
+    struct mp_sockpuppet_d3d11 *state = global->sockpuppet_d3d11;
+    if (!state) {
+        state = talloc_zero(global, struct mp_sockpuppet_d3d11);
+        global->sockpuppet_d3d11 = state;
+    }
+    state->host = *host;
+    return 0;
+#else
+    return MPV_ERROR_UNSUPPORTED;
+#endif
+}
+
+int mpv_sockpuppet_d3d11_release(mpv_handle *ctx, int index)
+{
+#if HAVE_D3D11
+    struct mp_sockpuppet_d3d11 *state = ctx->mpctx->global->sockpuppet_d3d11;
+    if (!state)
+        return MPV_ERROR_UNINITIALIZED;
+    if (index < 0 || index >= MPV_SOCKPUPPET_D3D11_MAX_RING)
+        return MPV_ERROR_INVALID_PARAMETER;
+    atomic_store(&state->busy[index], 0);
+    return 0;
+#else
+    return MPV_ERROR_UNSUPPORTED;
+#endif
 }
