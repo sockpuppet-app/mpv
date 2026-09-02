@@ -60,6 +60,10 @@ struct d3d11_device_opts {
     // If unset, the default adapter will be utilized when creating
     // a device.
     char *adapter_name;
+
+    // The adapter LUID (HighPart << 32 | LowPart) to utilize, which wins
+    // over adapter_name. 0 means unspecified.
+    uint64_t adapter_luid;
 };
 
 struct mp_dxgi_factory_ctx {
@@ -74,6 +78,9 @@ void mp_dxgi_factory_uninit(struct mp_dxgi_factory_ctx *ctx);
 IDXGIAdapter1 *mp_get_dxgi_adapter(struct mp_log *log,
                                    bstr requested_adapter_name,
                                    bstr *listing);
+
+// The adapter with this LUID (HighPart << 32 | LowPart), or NULL.
+IDXGIAdapter1 *mp_get_dxgi_adapter_by_luid(struct mp_log *log, uint64_t luid);
 
 bool mp_dxgi_output_desc_from_hwnd(struct mp_dxgi_factory_ctx *ctx,
                                    HWND hwnd, DXGI_OUTPUT_DESC1 *desc);
