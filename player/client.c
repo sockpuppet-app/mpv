@@ -24,6 +24,9 @@
 
 #include "common/common.h"
 #include "common/global.h"
+#if HAVE_D3D11
+#include "video/out/d3d11/context_sockpuppet.h"
+#endif
 #include "common/msg.h"
 #include "common/msg_control.h"
 #include "input/input.h"
@@ -184,6 +187,14 @@ void mp_clients_init(struct MPContext *mpctx)
     };
     mpctx->global->client_api = mpctx->clients;
     mp_mutex_init(&mpctx->clients->lock);
+#if HAVE_D3D11
+    // Allocated here, on the core thread, so that a client thread calling
+    // mpv_sockpuppet_d3d11_set_host() never allocates a talloc child of the
+    // core's structures and never has to publish a pointer the VO thread
+    // reads. It is a child of clients, so it goes in mp_clients_destroy().
+    mpctx->global->sockpuppet_d3d11 =
+        talloc_zero(mpctx->clients, struct mp_sockpuppet_d3d11);
+#endif
 }
 
 void mp_clients_destroy(struct MPContext *mpctx)
@@ -2246,4 +2257,81 @@ bool mp_streamcb_lookup(struct mpv_global *g, const char *protocol,
     }
     mp_mutex_unlock(&clients->lock);
     return found;
+}
+
+#if HAVE_D3D11
+static bool sockpuppet_host_equal(const mpv_sockpuppet_d3d11_host *a,
+                                  const mpv_sockpuppet_d3d11_host *b)
+{
+    return a->ctx == b->ctx &&
+           a->adapter_luid == b->adapter_luid &&
+           a->window == b->window &&
+           a->override_output_desc == b->override_output_desc &&
+           a->override_sdr_white_level == b->override_sdr_white_level &&
+           a->ring_length == b->ring_length &&
+           a->get_size == b->get_size &&
+           a->get_dpi_scale == b->get_dpi_scale &&
+           a->ring_changed == b->ring_changed &&
+           a->present == b->present;
+}
+#endif
+
+int mpv_sockpuppet_d3d11_set_host(mpv_handle *ctx,
+                                  const mpv_sockpuppet_d3d11_host *host)
+{
+#if HAVE_D3D11
+    if (!host || !host->get_size || !host->ring_changed || !host->present ||
+        host->ring_length < 2 || host->ring_length > MPV_SOCKPUPPET_D3D11_MAX_RING)
+        return MPV_ERROR_INVALID_PARAMETER;
+
+    struct mp_sockpuppet_d3d11 *state = ctx->mpctx->global->sockpuppet_d3d11;
+    if (!state)
+        return MPV_ERROR_UNINITIALIZED;
+
+    struct mp_client_api *clients = ctx->clients;
+    int r = 0;
+    mp_mutex_lock(&clients->lock);
+    if (atomic_load(&state->registered)) {
+        // The VO thread reads this table without a lock, on the promise that
+        // it never changes. Registering again is only allowed when it would
+        // change nothing.
+        if (!sockpuppet_host_equal(&state->host, host))
+            r = MPV_ERROR_INVALID_PARAMETER;
+    } else {
+        state->host = *host;
+        // Copied, so the VO thread never dereferences the host's pointer and
+        // the host may pass a temporary.
+        state->have_override_desc = !!host->override_output_desc;
+        if (state->have_override_desc) {
+            state->override_desc =
+                *(const DXGI_OUTPUT_DESC1 *)host->override_output_desc;
+        }
+        atomic_store(&state->registered, true);
+    }
+    mp_mutex_unlock(&clients->lock);
+    return r;
+#else
+    return MPV_ERROR_UNSUPPORTED;
+#endif
+}
+
+int mpv_sockpuppet_d3d11_release(mpv_handle *ctx, uint32_t generation, int index)
+{
+#if HAVE_D3D11
+    struct mp_sockpuppet_d3d11 *state = ctx->mpctx->global->sockpuppet_d3d11;
+    if (!state)
+        return MPV_ERROR_UNINITIALIZED;
+    if (index < 0 || index >= MPV_SOCKPUPPET_D3D11_MAX_RING || !generation)
+        return MPV_ERROR_INVALID_PARAMETER;
+    // The slot is taken back only when it is still held by the generation the
+    // caller names. A release belonging to a ring that has been superseded,
+    // or a second release of the same frame, finds something else there and
+    // is ignored: it must never free a slot of the live ring, which mpv would
+    // then copy the next frame into while the host is still reading it.
+    uint32_t expected = generation;
+    atomic_compare_exchange_strong(&state->slot_gen[index], &expected, 0);
+    return 0;
+#else
+    return MPV_ERROR_UNSUPPORTED;
+#endif
 }

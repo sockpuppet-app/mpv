@@ -248,7 +248,7 @@ extern "C" {
  * relational operators (<, >, <=, >=).
  */
 #define MPV_MAKE_VERSION(major, minor) (((major) << 16) | (minor) | 0UL)
-#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(2, 5)
+#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(2, 6)
 
 /**
  * The API user is allowed to "#define MPV_ENABLE_DEPRECATED 0" before
@@ -1904,6 +1904,165 @@ MPV_EXPORT int mpv_get_wakeup_pipe(mpv_handle *ctx);
 #endif
 
 /**
+ * The sockpuppet-d3d11 render context: rendering into shared Direct3D 11
+ * textures for a host that embeds libmpv on Windows, with no window.
+ *
+ * The host calls mpv_sockpuppet_d3d11_set_host() before the VO is created
+ * (before mpv_initialize() is safe) and starts playback with
+ * --vo=gpu-next --gpu-context=sockpuppet-d3d11. mpv creates the device on
+ * the adapter named by adapter_luid, renders every frame as it would to a
+ * window, copies the finished frame on the GPU into one of ring_length shared
+ * textures, and calls present() with the slot. The host owns the NT handles
+ * ring_changed() names, closes them itself, and returns a slot with
+ * mpv_sockpuppet_d3d11_release() when it is done with the frame in it.
+ *
+ * The textures carry a keyed mutex; both sides acquire and release key 0.
+ *
+ * Every ring is numbered with a generation, which ring_changed() names and
+ * which present() and mpv_sockpuppet_d3d11_release() carry. A ring_changed()
+ * supersedes every frame still outstanding from the ring before it: those
+ * frames will never be presented again, and a release that names their
+ * generation is ignored instead of freeing a slot of the ring that is now
+ * live. So a release against a superseded generation is harmless, and a
+ * release against the live one is the only way a slot comes back.
+ *
+ * Lifetimes, none of which are obvious:
+ *
+ * - Both callbacks run on mpv's VO thread. Neither may block, and neither may
+ *   call back into mpv: hand the frame on and return.
+ * - The handles named by a ring_changed() have to outlive every frame still
+ *   in flight from that ring. mpv drops its own reference to those textures
+ *   when the ring changes and never closes a handle itself, so the host's
+ *   open handle is the only thing keeping the texture alive.
+ * - mpv_sockpuppet_d3d11_release() is thread-safe against everything except
+ *   the destruction of the mpv instance. A release that runs after
+ *   mpv_terminate_destroy() has returned is a use-after-free. A host whose
+ *   releases arrive from asynchronous callbacks has to fence them off before
+ *   it destroys the handle.
+ *
+ * Only available on Windows builds with d3d11. Everywhere else the functions
+ * return MPV_ERROR_UNSUPPORTED.
+ */
+
+/** The most shared textures a host may ask for. */
+#define MPV_SOCKPUPPET_D3D11_MAX_RING 8
+
+/** How the pixels in a shared texture are encoded. */
+typedef enum mpv_sockpuppet_d3d11_color_space {
+    /** 8- or 10-bit, sRGB transfer, BT.709 primaries. */
+    MPV_SOCKPUPPET_D3D11_CSP_SRGB = 0,
+    /** 10-bit, PQ (SMPTE ST 2084), BT.2020 primaries. */
+    MPV_SOCKPUPPET_D3D11_CSP_PQ = 1,
+    /** 16-bit float, linear light, BT.709 primaries, 1.0 = SDR white (scRGB). */
+    MPV_SOCKPUPPET_D3D11_CSP_SCRGB_LINEAR = 2,
+    /** 10-bit, gamma 2.2, BT.2020 primaries. */
+    MPV_SOCKPUPPET_D3D11_CSP_BT2020_G22 = 3
+} mpv_sockpuppet_d3d11_color_space;
+
+typedef struct mpv_sockpuppet_d3d11_host {
+    /** Passed back to every callback. */
+    void *ctx;
+    /**
+     * The adapter to render on, named by the two halves of its LUID with
+     * HighPart in the upper 32 bits and both halves taken as unsigned:
+     *
+     *   ((uint64_t)(uint32_t)luid.HighPart << 32) | (uint32_t)luid.LowPart
+     *
+     * LUID::HighPart is a signed LONG, so composing this without the cast
+     * sign-extends and names an adapter that does not exist. 0 = default
+     * adapter.
+     *
+     * A LUID that matches no adapter is refused rather than falling back: a
+     * keyed-mutex shared texture cannot be opened by a device on a different
+     * adapter, so there would be nothing for the host to show.
+     */
+    uint64_t adapter_luid;
+    /**
+     * The HWND whose monitor decides the target colour space, colour depth
+     * and SDR white level, the way it does for a windowed mpv. May be NULL,
+     * in which case none of those are known.
+     */
+    void *window;
+    /**
+     * A DXGI_OUTPUT_DESC1 to use instead of the window's monitor, or NULL.
+     * A test hook: it lets an SDR machine exercise the HDR decisions. It is
+     * copied by mpv_sockpuppet_d3d11_set_host() and does not have to outlive
+     * that call.
+     */
+    const void *override_output_desc;
+    /** SDR white level in nits to use instead of the monitor's. 0 = read it. */
+    float override_sdr_white_level;
+    /** Number of shared textures, 2 to MPV_SOCKPUPPET_D3D11_MAX_RING. */
+    int ring_length;
+    /** The stage size in pixels. Polled by the VO thread. */
+    void (*get_size)(void *ctx, int *width, int *height);
+    /** The stage's DPI scale (1.0 = 96 dpi), for subtitle sizing. May be NULL. */
+    float (*get_dpi_scale)(void *ctx);
+    /**
+     * A new ring, numbered generation: count NT handles (HANDLE values) to
+     * shared textures of width x height in DXGI format dxgi_format.
+     *
+     * Called from the VO thread whenever the size or the format changes, and
+     * once with generation 0, count 0 and nt_handles NULL when the ring is
+     * gone for good, which is the last thing the VO does before it is
+     * destroyed.
+     *
+     * Every frame outstanding from the previous ring is superseded by this
+     * call: it will never be presented again and must not be released against
+     * the new generation. The host closes the previous ring's handles once it
+     * has finished with the frames it took from it, and closes the handles
+     * named here when this ring is superseded in turn.
+     *
+     * Must not block and must not call back into mpv.
+     */
+    void (*ring_changed)(void *ctx, uint32_t generation, int count,
+                         void *const *nt_handles, int width, int height,
+                         int dxgi_format);
+    /**
+     * A frame is in slot index of ring generation, encoded as color_space (an
+     * mpv_sockpuppet_d3d11_color_space).
+     *
+     * pts_ns is when the frame was copied out, on mpv's monotonic clock, the
+     * one mpv_get_time_ns() reads. It is not a media timestamp: under
+     * vo_gpu_next the swapchain never sees one. It increases strictly, which
+     * is what a sink that paces frames needs of it.
+     *
+     * Called from the VO thread. The slot is the host's until it is handed
+     * back with mpv_sockpuppet_d3d11_release(ctx, generation, index).
+     *
+     * Must not block and must not call back into mpv.
+     */
+    void (*present)(void *ctx, uint32_t generation, int index, int64_t pts_ns,
+                    int color_space);
+} mpv_sockpuppet_d3d11_host;
+
+/**
+ * Register the host. The table, and the DXGI_OUTPUT_DESC1 that
+ * override_output_desc names, are copied. Call before the VO exists.
+ *
+ * The registration is read by the VO thread and must not change under it, so
+ * a second call is accepted only when every field is identical to the first,
+ * and returns MPV_ERROR_INVALID_PARAMETER otherwise.
+ *
+ * @return error code
+ */
+MPV_EXPORT int mpv_sockpuppet_d3d11_set_host(mpv_handle *ctx,
+                                             const mpv_sockpuppet_d3d11_host *host);
+
+/**
+ * Give a ring slot back: slot index of ring generation, as present() named
+ * them. Thread-safe, except against mpv_terminate_destroy(); see above.
+ *
+ * A release for a generation that has been superseded, or for a slot that is
+ * already free, is ignored and returns success. Only a malformed argument, an
+ * index outside the ring or a generation of 0, is an error.
+ *
+ * @return error code
+ */
+MPV_EXPORT int mpv_sockpuppet_d3d11_release(mpv_handle *ctx,
+                                            uint32_t generation, int index);
+
+/**
  * Defining MPV_CPLUGIN_DYNAMIC_SYM during plugin compilation will replace mpv_*
  * functions with function pointers. Those pointer will be initialized when
  * loading the plugin.
@@ -2023,6 +2182,10 @@ MPV_DEFINE_SYM_PTR(mpv_hook_continue)
 #define mpv_hook_continue pfn_mpv_hook_continue
 MPV_DEFINE_SYM_PTR(mpv_get_wakeup_pipe)
 #define mpv_get_wakeup_pipe pfn_mpv_get_wakeup_pipe
+MPV_DEFINE_SYM_PTR(mpv_sockpuppet_d3d11_set_host)
+#define mpv_sockpuppet_d3d11_set_host pfn_mpv_sockpuppet_d3d11_set_host
+MPV_DEFINE_SYM_PTR(mpv_sockpuppet_d3d11_release)
+#define mpv_sockpuppet_d3d11_release pfn_mpv_sockpuppet_d3d11_release
 
 #endif
 

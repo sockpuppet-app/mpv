@@ -32,6 +32,10 @@ API changes
 
 ::
 
+ 2.6    - add mpv_sockpuppet_d3d11_set_host(), mpv_sockpuppet_d3d11_release(),
+          mpv_sockpuppet_d3d11_host and mpv_sockpuppet_d3d11_color_space, for
+          the sockpuppet-d3d11 gpu-context: Direct3D 11 rendering into shared
+          textures for an embedding host, with no window (Windows only)
  --- mpv 0.40.0 ---
  2.5    - Deprecate MPV_RENDER_PARAM_AMBIENT_LIGHT. no replacement.
  --- mpv 0.39.0 ---
