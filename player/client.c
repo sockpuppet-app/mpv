@@ -2369,9 +2369,19 @@ int mpv_sockpuppet_d3d11_wakeup(mpv_handle *ctx)
     // either the VO is alive for the whole call, because sp_uninit() is
     // waiting on the lock this holds, or it is already gone and there is
     // nothing to draw. Nothing between those two states is observable.
+    //
+    // The mark goes up before the request, and under the same lock, so the
+    // VO thread cannot reach the Present of the frame this asks for without
+    // seeing it. It tells sp_swap_buffers() that the frame it is about to
+    // present is a redraw and should not wait for a vsync; see redraw_pending
+    // in context_sockpuppet.h for why that matters. Setting it only when
+    // there is a VO, and clearing it in sp_uninit(), keeps a mark from
+    // outliving the VO it was meant for.
     mp_mutex_lock(&state->vo_lock);
-    if (state->vo)
+    if (state->vo) {
+        atomic_store(&state->redraw_pending, true);
         vo_redraw(state->vo);
+    }
     mp_mutex_unlock(&state->vo_lock);
     return 0;
 #else

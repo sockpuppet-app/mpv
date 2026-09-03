@@ -2080,6 +2080,12 @@ MPV_EXPORT int mpv_sockpuppet_d3d11_release(mpv_handle *ctx,
  * overrides that. The VO limits a requested redraw to one per vsync interval,
  * so calling faster than the display refreshes costs nothing extra.
  *
+ * The frame this asks for is presented without waiting for a vertical blank,
+ * because the picture the host receives is the shared texture and not the
+ * swapchain, and waiting would only make the redraw queue behind the film's
+ * own frames. Frames carrying video are still presented on a vsync, so the
+ * pacing the VO's frame timing depends on is unchanged.
+ *
  * Thread-safe, and safe at any time after mpv_create(): before the VO exists,
  * after it is gone, and against its creation and destruction. It is a no-op
  * whenever there is no sockpuppet-d3d11 VO to wake. Like

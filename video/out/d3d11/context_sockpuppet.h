@@ -67,6 +67,33 @@ struct mp_sockpuppet_d3d11 {
     // mp_clients_destroy(), so it outlives every VO.
     mp_mutex vo_lock;
     struct vo *vo;
+
+    // Set by mpv_sockpuppet_d3d11_wakeup() when it asks for a redraw, and
+    // taken by the next sp_swap_buffers(), which presents that frame with a
+    // sync interval of 0 instead of 1.
+    //
+    // An ordinary frame is presented on a vsync on purpose: DXGI pacing the
+    // render loop to the display is what keeps the VO's frame timing, and
+    // A/V sync with it, on a swapchain that has no window to pace it. A
+    // redraw the host asked for is not an ordinary frame. It carries no new
+    // video, it exists because something the host changed should be seen
+    // before the next one, and every vsync slot it waits for is a slot the
+    // film's own frames wanted. On a swapchain attached to no visual DXGI
+    // paces against the adapter's output rather than the panel, so there are
+    // about sixty slots a second to share however fast the display runs, and
+    // a host animating a property at the display's rate loses two thirds of
+    // its redraws to that queue while a film is playing. Paused, nothing
+    // competes and the same animation is smooth, which is the whole shape of
+    // the fault.
+    //
+    // The flag is written under vo_lock, beside the vo pointer and by the
+    // same call, and read with an exchange from the VO thread, so a mark is
+    // consumed exactly once and never twice. It is deliberately not paired
+    // with the frame it was asked for: a redraw that happens to arrive at
+    // the same moment as a decoded frame presents that one unsynced instead.
+    // That costs one frame's pacing, once, and a mechanism to prevent it
+    // would cost more than it saves.
+    _Atomic bool redraw_pending;
 };
 
 extern const struct ra_ctx_fns ra_ctx_d3d11_sockpuppet;

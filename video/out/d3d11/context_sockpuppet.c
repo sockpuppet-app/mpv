@@ -623,8 +623,21 @@ static void sp_swap_buffers(struct ra_swapchain *sw)
     p->last_submit_qpc = perf_count.QuadPart;
 
     // Nothing shows this, but DXGI still paces it to the display, which is
-    // what vo_gpu_next expects of swap_buffers.
-    IDXGISwapChain_Present(p->swapchain, 1, 0);
+    // what vo_gpu_next expects of swap_buffers: a frame carrying video waits
+    // for a vsync, and that wait is the whole of this context's frame timing.
+    //
+    // Except for a redraw the host asked for, which is presented with a sync
+    // interval of 0 and does not wait. The picture is already out: the copy
+    // into the shared texture above is what the host will see, and the
+    // Present that follows it shows nothing to anybody. All the wait does to
+    // a redraw is hold the VO thread until DXGI's queue drains, and that
+    // queue is the adapter's own output, roughly sixty slots a second
+    // however fast the panel runs. A host animating a property at the
+    // display's rate asks for redraws faster than that, and while a film is
+    // playing its video frames have first claim on the slots, so most of the
+    // redraws never became a picture at all. See redraw_pending.
+    bool asked_for = atomic_exchange(&p->state->redraw_pending, false);
+    IDXGISwapChain_Present(p->swapchain, asked_for ? 0 : 1, 0);
 
     // After the Present: by now the mutex release the copy recorded has
     // certainly been submitted, so a host that acquires the moment it hears
@@ -712,8 +725,14 @@ static void sp_uninit(struct ra_ctx *ctx)
     // and must not clear a VO it never set.
     if (p->state) {
         mp_mutex_lock(&p->state->vo_lock);
-        if (p->state->vo == ctx->vo)
+        if (p->state->vo == ctx->vo) {
             p->state->vo = NULL;
+            // A wakeup can set the mark and then find no frame to be drawn
+            // before the VO goes. Clearing it here, under the lock that
+            // guards the pointer, is what keeps a mark from outliving the VO
+            // it was meant for and making one frame of the next one unsynced.
+            atomic_store(&p->state->redraw_pending, false);
+        }
         mp_mutex_unlock(&p->state->vo_lock);
     }
 

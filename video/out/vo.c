@@ -1192,7 +1192,17 @@ static MP_THREAD_VOID vo_thread(void *ptr)
                 do_redraw(vo); // now is a good time
                 vo->previous_redraw_time = now;
             } else {
-                wait_vo(vo, now + max_interval);
+                // Until the redraw is allowed, which is one interval after
+                // the last one and not one interval from here. Waiting from
+                // here overshoots by however early the request was, and
+                // nothing arrives to cut the wait short: vo_redraw() only
+                // wakes the VO when it is the one setting request_redraw,
+                // and it is already set. So a request that came a
+                // microsecond too early waited a whole further interval and
+                // the redraw landed two refreshes after the last one. A host
+                // asking once per refresh lost about a quarter of its
+                // redraws to that, at random, which is what it looks like.
+                wait_vo(vo, vo->previous_redraw_time + max_interval);
             }
             continue;
         }
