@@ -235,6 +235,7 @@ typedef struct MPOpts {
     bool osd_fractions;
     int osd_on_seek;
     bool video_osd;
+    bool osd_redraw_while_playing;
 
     bool untimed;
     char *stream_dump;

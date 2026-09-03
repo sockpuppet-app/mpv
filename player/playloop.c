@@ -677,7 +677,28 @@ static void handle_osd_redraw(struct MPContext *mpctx)
         return;
     // If we're playing normally, let OSD be redrawn naturally as part of
     // video display.
-    if (!mpctx->paused) {
+    //
+    // What that is protecting is work, and only work. While a file plays, the
+    // next video frame is at most 100 ms away and it will draw the OSD with
+    // it, so redrawing now is a second render of the same picture that
+    // nobody will ever see separately. For an OSD that changes when somebody
+    // presses a key, that is exactly the right trade.
+    //
+    // It is the wrong trade for an OSD being animated. A host sliding
+    // sub-pos once per display refresh is asking for a picture per refresh,
+    // and this hands it one per *video* frame instead: on 23.976 fps content
+    // the animation stalls for 42 ms at a time, which is the whole of what a
+    // viewer sees as the subtitle lagging. Nothing about the OSD state says
+    // which of the two is happening, so it is the host that has to say, and
+    // --osd-redraw-while-playing is it. Off by default, because the economy
+    // above is right for every player that is not animating the OSD.
+    //
+    // This is still not an unconditional refresh. Both queries below are
+    // edge-triggered: osd_query_and_reset_want_redraw() consumes the flag an
+    // OSD change set, and vo_want_redraw() consumes the VO's. With nothing
+    // changing, this returns without drawing however often it is called, so
+    // the option cannot turn into a spin.
+    if (!mpctx->paused && !mpctx->opts->osd_redraw_while_playing) {
         if (mpctx->sleeptime < 0.1 && mpctx->video_status == STATUS_PLAYING)
             return;
     }
