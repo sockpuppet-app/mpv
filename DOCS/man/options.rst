@@ -4888,6 +4888,26 @@ OSD
     Show OSD times with fractions of seconds (in millisecond precision). Useful
     to see the exact timestamp of a video frame.
 
+``--osd-redraw-while-playing=<yes|no>``
+    Redraw the picture as soon as the OSD changes, even while a file is
+    playing (default: no).
+
+    Normally an OSD change made during playback is not drawn on its own. The
+    next video frame is at most 100 ms away and draws the OSD with it, so
+    drawing now would render the same picture twice for one that anybody
+    sees. That is the right trade for an OSD that changes when a key is
+    pressed.
+
+    It is the wrong trade when the OSD is being animated. A client sliding
+    ``--sub-pos`` once per display refresh gets one picture per *video* frame
+    instead of one per refresh, so on 24 fps content the animation moves in
+    42 ms steps however often the property is set. Turn this on for that, and
+    leave it off otherwise: it costs a full render for every OSD change, and
+    the point of the default is that most of those renders are wasted.
+
+    This does not redraw when nothing has changed, and it does not poll. It
+    acts on an OSD change and on nothing else.
+
 ``--osd-level=<0-3>``
     Specifies which mode the OSD should start in.
 

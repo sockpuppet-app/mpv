@@ -816,6 +816,7 @@ static const m_option_t mp_opts[] = {
         {"msg-bar", 3})},
     {"osd-duration", OPT_INT(osd_duration), M_RANGE(0, 3600000)},
     {"osd-fractions", OPT_BOOL(osd_fractions)},
+    {"osd-redraw-while-playing", OPT_BOOL(osd_redraw_while_playing)},
 
     {"sstep", OPT_DOUBLE(step_sec), M_RANGE(0, DBL_MAX)},
 
