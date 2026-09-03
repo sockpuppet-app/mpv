@@ -248,7 +248,7 @@ extern "C" {
  * relational operators (<, >, <=, >=).
  */
 #define MPV_MAKE_VERSION(major, minor) (((major) << 16) | (minor) | 0UL)
-#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(2, 6)
+#define MPV_CLIENT_API_VERSION MPV_MAKE_VERSION(2, 7)
 
 /**
  * The API user is allowed to "#define MPV_ENABLE_DEPRECATED 0" before
@@ -2063,6 +2063,36 @@ MPV_EXPORT int mpv_sockpuppet_d3d11_release(mpv_handle *ctx,
                                             uint32_t generation, int index);
 
 /**
+ * Wake the VO thread, so that it re-reads the stage size through get_size()
+ * and draws now instead of when the next video frame is due.
+ *
+ * The context reads get_size() at the top of every VO iteration, and without
+ * this the VO sleeps until it has a frame to show: on 24 fps content a new
+ * stage size is up to 42 ms old before it is acted on, and a window being
+ * dragged changes size faster than that. Call this after every change to what
+ * get_size() will answer, and after any property set whose effect should be
+ * visible before the next frame (sub-pos while animating it, say). Calling it
+ * when nothing changed is harmless: the VO wakes, reads the same size, and
+ * goes back to sleep.
+ *
+ * While a file is playing mpv otherwise draws only when it has a video frame,
+ * on the reasoning that the next one is soon enough. This is the request that
+ * overrides that. The VO limits a requested redraw to one per vsync interval,
+ * so calling faster than the display refreshes costs nothing extra.
+ *
+ * Thread-safe, and safe at any time after mpv_create(): before the VO exists,
+ * after it is gone, and against its creation and destruction. It is a no-op
+ * whenever there is no sockpuppet-d3d11 VO to wake. Like
+ * mpv_sockpuppet_d3d11_release() it is not safe against mpv_terminate_destroy()
+ * running concurrently on the same handle.
+ *
+ * This does not block on the VO and does not wait for the frame it asks for.
+ *
+ * @return error code
+ */
+MPV_EXPORT int mpv_sockpuppet_d3d11_wakeup(mpv_handle *ctx);
+
+/**
  * Defining MPV_CPLUGIN_DYNAMIC_SYM during plugin compilation will replace mpv_*
  * functions with function pointers. Those pointer will be initialized when
  * loading the plugin.
@@ -2186,6 +2216,8 @@ MPV_DEFINE_SYM_PTR(mpv_sockpuppet_d3d11_set_host)
 #define mpv_sockpuppet_d3d11_set_host pfn_mpv_sockpuppet_d3d11_set_host
 MPV_DEFINE_SYM_PTR(mpv_sockpuppet_d3d11_release)
 #define mpv_sockpuppet_d3d11_release pfn_mpv_sockpuppet_d3d11_release
+MPV_DEFINE_SYM_PTR(mpv_sockpuppet_d3d11_wakeup)
+#define mpv_sockpuppet_d3d11_wakeup pfn_mpv_sockpuppet_d3d11_wakeup
 
 #endif
 
